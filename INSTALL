@@ -1,6 +1,11 @@
 
 * required libraries
 
-lame
-lameplus
-wave
+3rd party:
+
+- lame
+
+own:
+
+- lameplus
+- wave

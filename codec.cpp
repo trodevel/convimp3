@@ -20,11 +20,12 @@
 
  */
 
-// $Revision: 1631 $ $Date:: 2015-03-24 #$ $Author: serge $
+// $Revision: 1655 $ $Date:: 2015-03-25 #$ $Author: serge $
 
 #include "codec.h"          // self
 
-#include <fstream>          // std::ofstream
+#include <fstream>                  // std::ofstream
+#include <stdexcept>                // std::logic_error
 #include "../lameplus/lameplus.h"   // LamePlus
 #include "../wave/wave.h"           // Wave
 
@@ -32,7 +33,7 @@ NAMESPACE_CONVIMP3_START
 
 bool Codec::encode( const char *in_file, const char *out_file )
 {
-    Wave pcm( in_file );
+    wave::Wave pcm( in_file );
 
     unsigned sample_rate    = pcm.get_samples_per_sec();
     unsigned byte_rate      = pcm.get_avg_bytes_per_sec();
@@ -126,7 +127,8 @@ bool Codec::decode( const char *in_file, const char *out_file )
     const int PCM_SIZE = 8192;
     const int MP3_SIZE = 8192;
 
-    short int pcm_buffer[PCM_SIZE * 2];
+    char pcm_buffer_l[ PCM_SIZE * sizeof(short int) ];
+    char pcm_buffer_r[ PCM_SIZE * sizeof(short int) ];
     unsigned char mp3_buffer[MP3_SIZE];
 
     lameplus::LamePlus l;
@@ -136,9 +138,91 @@ bool Codec::decode( const char *in_file, const char *out_file )
     if( l.init_params() == -1 )
         return false;
 
-//    mp3.read( reinterpret_cast<char*>( mp3_buffer ), k * sizeof(short int) * MP3_SIZE );
-//
-//    int read = mp3.gcount();
+    lameplus::Hip       hip;
+
+    bool got_header = false;
+
+    wave::Wave res;
+
+    int channels        = 0;
+
+    while( true )
+    {
+        mp3.read( reinterpret_cast<char*>( mp3_buffer ), sizeof(char) * MP3_SIZE );
+
+        int read = mp3.gcount();
+
+        if( read <= 0 )
+            break;
+
+        int num_samples = 0;
+
+        while( true )
+        {
+            if( got_header )
+            {
+                num_samples = hip.decode1(
+                        mp3_buffer, read,
+                        reinterpret_cast<short int*>( & pcm_buffer_l[0] ),
+                        reinterpret_cast<short int*>( & pcm_buffer_r[0] ) );
+            }
+            else
+            {
+                lameplus::MP3Data   mp3data;
+
+                num_samples = hip.decode1_headers(
+                        mp3_buffer, read,
+                        reinterpret_cast<short int*>( & pcm_buffer_l[0] ),
+                        reinterpret_cast<short int*>( & pcm_buffer_r[0] ), mp3data );
+
+                if( mp3data.is_header_parsed() )
+                {
+                    got_header = true;
+
+                    channels        = mp3data.get_stereo();
+                    int samplerate  = mp3data.get_samplerate();
+                    int bitrate     = mp3data.get_bitrate() * 1000;
+
+                    int bits_per_sample = bitrate / ( samplerate * channels );
+
+                    bits_per_sample = 16;
+
+                    res = wave::Wave( channels, samplerate, bits_per_sample );
+                }
+            }
+
+            if( num_samples == 0 )
+            {
+                if( read > 0 )  // need more data to continue decoding
+                {
+                    read = 0;
+                    continue;
+                }
+                break;
+            }
+
+            if( num_samples == -1 )
+                throw std::logic_error( "Codec::decode(): decoding error" );
+
+            if( got_header == false )
+                throw std::logic_error( "Codec::decode(): got samples without header" );
+
+            read    = 0;
+
+            if( channels == 2 )
+                res.append_samples( pcm_buffer_l, pcm_buffer_r, num_samples * sizeof( short int ) );
+            else
+                res.append_samples( pcm_buffer_l, num_samples * sizeof( short int ) );
+        }
+
+        if( mp3.fail() )
+            break;
+    }
+
+    if( got_header == false )
+        return false;
+
+    res.save( out_file );
 
     return true;
 }
